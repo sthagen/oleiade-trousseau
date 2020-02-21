@@ -1,8 +1,6 @@
 package trousseau
 
 import (
-	"time"
-
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,29 +8,26 @@ import (
 	"os"
 	"strings"
 
-	"github.com/oleiade/trousseau/internal/store"
+	"github.com/oleiade/trousseau/internal/config"
 
 	"github.com/oleiade/trousseau/pkg/dsn"
 )
 
 func CreateAction(ct CryptoType, ca CryptoAlgorithm, recipients []string) error {
-	meta := store.Meta{
-		CreatedAt:        time.Now().String(),
-		LastModifiedAt:   time.Now().String(),
-		Recipients:       recipients,
-		TrousseauVersion: TROUSSEAU_VERSION,
+	config, err := config.Load("")
+	if err != nil {
+		fmt.Errorf("unable to load configuration; reason: %s", err.Error())
 	}
-	store := store.NewStore(meta)
 
-	tr := Trousseau{
+	secretStore := NewSecretStore()
+	vault := Vault{
 		CryptoType:      ct,
 		CryptoAlgorithm: ca,
 	}
 
-	if tr.CryptoType == SYMMETRIC_ENCRYPTION {
-		passphrase, err := GetPassphrase()
+	if vault.CryptoType == SYMMETRIC_ENCRYPTION {
+		passphrase, err := GetPassphrase(config)
 		if err != nil {
-
 			if !AskPassphraseFlagCheck() {
 				AskPassphrase(true)
 			}
@@ -41,12 +36,17 @@ func CreateAction(ct CryptoType, ca CryptoAlgorithm, recipients []string) error 
 		}
 	}
 
-	err := tr.Encrypt(store)
+	err = vault.Lock(config, secretStore)
 	if err != nil {
 		return err
 	}
 
-	err = tr.Write(InferStorePath())
+	f, err := os.OpenFile(InferStorePath(config), os.O_CREATE|os.O_WRONLY, os.ModeAppend)
+	if err != nil {
+		return err
+	}
+
+	err = vault.Dump(f)
 	if err != nil {
 		return err
 	}
@@ -55,108 +55,115 @@ func CreateAction(ct CryptoType, ca CryptoAlgorithm, recipients []string) error 
 }
 
 func PushAction(destination string, sshPrivateKey string, askPassword bool) error {
-	endpointDsn, err := dsn.Parse(destination)
+	endpointDSN, err := dsn.Parse(destination)
 	if err != nil {
 		return err
 	}
 
-	switch endpointDsn.Scheme {
+	var remote UploadDownloader
+
+	switch endpointDSN.Scheme {
 	case "s3":
-		err := endpointDsn.SetDefaults(S3Defaults)
+		err := endpointDSN.SetDefaults(S3Defaults)
 		if err != nil {
 			return err
 		}
 
-		err = UploadUsingS3(endpointDsn)
+		remote, err = NewS3Remote(endpointDSN.Port, endpointDSN.Id, endpointDSN.Secret, endpointDSN.Host)
 		if err != nil {
 			return err
 		}
 	case "scp":
-		err := endpointDsn.SetDefaults(ScpDefaults)
+		err := endpointDSN.SetDefaults(ScpDefaults)
 		if err != nil {
 			return err
 		}
 
 		if askPassword == true {
 			password := PromptForHiddenInput("Ssh endpoint password: ")
-			endpointDsn.Secret = password
+			endpointDSN.Secret = password
 		}
 
-		err = UploadUsingScp(endpointDsn, sshPrivateKey)
-		if err != nil {
-			return err
-		}
+		remote = NewSCPRemote(endpointDSN.Host, endpointDSN.Port, endpointDSN.Id, endpointDSN.Secret, sshPrivateKey)
 	case "gist":
-		err = UploadUsingGist(endpointDsn)
-		if err != nil {
-			return err
-		}
+		remote = NewGistRemote(endpointDSN.Id, endpointDSN.Secret)
+	}
+
+	err = remote.Upload(endpointDSN.Path)
+	if err != nil {
+		return err
 	}
 
 	return nil
 }
 
 func PullAction(source string, sshPrivateKey string, askPassword bool) error {
-	endpointDsn, err := dsn.Parse(source)
+	endpointDSN, err := dsn.Parse(source)
 	if err != nil {
 		return err
 	}
 
-	switch endpointDsn.Scheme {
+	var remote UploadDownloader
+
+	switch endpointDSN.Scheme {
 	case "s3":
-		err := endpointDsn.SetDefaults(S3Defaults)
+		err := endpointDSN.SetDefaults(S3Defaults)
 		if err != nil {
 			return err
 		}
 
-		err = DownloadUsingS3(endpointDsn)
+		remote, err = NewS3Remote(endpointDSN.Port, endpointDSN.Id, endpointDSN.Secret, endpointDSN.Host)
 		if err != nil {
 			return err
 		}
 	case "scp":
-		err := endpointDsn.SetDefaults(ScpDefaults)
+		err := endpointDSN.SetDefaults(ScpDefaults)
 		if err != nil {
 			return err
 		}
 
 		if askPassword == true {
 			password := PromptForHiddenInput("Ssh endpoint password: ")
-			endpointDsn.Secret = password
+			endpointDSN.Secret = password
 		}
 
-		err = DownloadUsingScp(endpointDsn, sshPrivateKey)
-		if err != nil {
-			return err
-		}
+		remote = NewSCPRemote(endpointDSN.Host, endpointDSN.Port, endpointDSN.Id, endpointDSN.Secret, sshPrivateKey)
 	case "gist":
-		err = DownloadUsingGist(endpointDsn)
-		if err != nil {
-			return err
-		}
+		remote = NewGistRemote(endpointDSN.Id, endpointDSN.Secret)
 	default:
-		if endpointDsn.Scheme == "" {
+		if endpointDSN.Scheme == "" {
 			ErrorLogger.Fatalf("No dsn scheme supplied")
 		} else {
-			ErrorLogger.Fatalf("Invalid dsn scheme supplied: %s", endpointDsn.Scheme)
+			ErrorLogger.Fatalf("Invalid dsn scheme supplied: %s", endpointDSN.Scheme)
 		}
+	}
+
+	err = remote.Download(endpointDSN.Path)
+	if err != nil {
+		return err
 	}
 
 	return nil
 }
 
 func ExportAction(destination io.Writer, plain bool) error {
+	config, err := config.Load("")
+	if err != nil {
+		fmt.Errorf("unable to load configuration; reason: %s", err.Error())
+	}
+
 	if plain == true {
-		tr, err := OpenTrousseau(InferStorePath())
+		vault, err := OpenVault(InferStorePath(config))
 		if err != nil {
 			return err
 		}
 
-		store, err := tr.Decrypt()
+		secretStore, err := vault.Unlock(config)
 		if err != nil {
 			return err
 		}
 
-		storeBytes, err := json.Marshal(store)
+		storeBytes, err := json.Marshal(secretStore)
 		if err != nil {
 			return err
 		}
@@ -166,7 +173,7 @@ func ExportAction(destination io.Writer, plain bool) error {
 			return err
 		}
 	} else {
-		inputFile, err := os.Open(InferStorePath())
+		inputFile, err := os.Open(InferStorePath(config))
 		defer inputFile.Close()
 		if err != nil {
 			return err
@@ -184,19 +191,24 @@ func ExportAction(destination io.Writer, plain bool) error {
 func ImportAction(source io.Reader, strategy ImportStrategy, plain bool) error {
 	var data []byte
 	var err error
-	var importedStore *store.Store = &store.Store{}
-	var localFilePath string = InferStorePath()
 
-	localTr, err := OpenTrousseau(localFilePath)
+	config, err := config.Load("")
+	if err != nil {
+		fmt.Errorf("unable to load configuration; reason: %s", err.Error())
+	}
+
+	localFilePath := InferStorePath(config)
+	localVault, err := OpenVault(localFilePath)
 	if err != nil {
 		return err
 	}
 
-	localStore, err := localTr.Decrypt()
+	localSecretStore, err := localVault.Unlock(config)
 	if err != nil {
 		return err
 	}
 
+	importedStore := NewSecretStore()
 	if plain == true {
 		data, err = ioutil.ReadAll(source)
 		if err != nil {
@@ -208,33 +220,33 @@ func ImportAction(source io.Reader, strategy ImportStrategy, plain bool) error {
 			return err
 		}
 	} else {
-		data, err = ioutil.ReadAll(source)
+		importedVault, err := ReadVault(source)
 		if err != nil {
 			return err
 		}
 
-		importedTr, err := FromBytes(data)
-		if err != nil {
-			return err
-		}
-
-		importedStore, err = importedTr.Decrypt()
+		importedStore, err = importedVault.Unlock(config)
 		if err != nil {
 			return err
 		}
 	}
 
-	err = ImportStore(importedStore, localStore, strategy)
+	err = ImportStore(importedStore, localSecretStore, strategy)
 	if err != nil {
 		return err
 	}
 
-	err = localTr.Encrypt(localStore)
+	err = localVault.Lock(config, localSecretStore)
 	if err != nil {
 		return err
 	}
 
-	err = localTr.Write(localFilePath)
+	f, err := os.Open(localFilePath)
+	if err != nil {
+		return err
+	}
+
+	err = localVault.Dump(f)
 	if err != nil {
 		return err
 	}
@@ -243,18 +255,22 @@ func ImportAction(source io.Reader, strategy ImportStrategy, plain bool) error {
 }
 
 func ListRecipientsAction() error {
-	tr, err := OpenTrousseau(InferStorePath())
+	config, err := config.Load("")
+	if err != nil {
+		fmt.Errorf("unable to load configuration; reason: %s", err.Error())
+	}
+
+	vault, err := OpenVault(InferStorePath(config))
 	if err != nil {
 		return err
 	}
 
-	store, err := tr.Decrypt()
+	secretStore, err := vault.Unlock(config)
 	if err != nil {
 		return err
 	}
 
-	recipients := store.Meta.ListRecipients()
-	for _, r := range recipients {
+	for _, r := range secretStore.Metadata.Recipients {
 		InfoLogger.Println(r)
 	}
 
@@ -262,27 +278,39 @@ func ListRecipientsAction() error {
 }
 
 func AddRecipientAction(recipient string) error {
-	tr, err := OpenTrousseau(InferStorePath())
+	config, err := config.Load("")
+	if err != nil {
+		fmt.Errorf("unable to load configuration; reason: %s", err.Error())
+	}
+
+	vault, err := OpenVault(InferStorePath(config))
 	if err != nil {
 		return err
 	}
 
-	store, err := tr.Decrypt()
+	secretStore, err := vault.Unlock(config)
 	if err != nil {
 		return err
 	}
 
-	err = store.Meta.AddRecipient(recipient)
+	for _, r := range secretStore.Metadata.Recipients {
+		if r == recipient {
+			return fmt.Errorf("recipient %s already present", recipient)
+		}
+		secretStore.Metadata.Recipients = append(secretStore.Metadata.Recipients, recipient)
+	}
+
+	err = vault.Lock(config, secretStore)
 	if err != nil {
 		return err
 	}
 
-	err = tr.Encrypt(store)
+	f, err := os.Open(InferStorePath(config))
 	if err != nil {
 		return err
 	}
 
-	err = tr.Write(InferStorePath())
+	err = vault.Dump(f)
 	if err != nil {
 		return err
 	}
@@ -291,27 +319,40 @@ func AddRecipientAction(recipient string) error {
 }
 
 func RemoveRecipientAction(recipient string) error {
-	tr, err := OpenTrousseau(InferStorePath())
+	config, err := config.Load("")
+	if err != nil {
+		fmt.Errorf("unable to load configuration; reason: %s", err.Error())
+	}
+
+	vault, err := OpenVault(InferStorePath(config))
 	if err != nil {
 		return err
 	}
 
-	store, err := tr.Decrypt()
+	secretStore, err := vault.Unlock(config)
 	if err != nil {
 		return err
 	}
 
-	err = store.Meta.RemoveRecipient(recipient)
+	var filteredRecipients []string
+	for _, r := range secretStore.Metadata.Recipients {
+		if r != recipient {
+			filteredRecipients = append(filteredRecipients, recipient)
+		}
+	}
+	secretStore.Metadata.Recipients = filteredRecipients
+
+	err = vault.Lock(config, secretStore)
 	if err != nil {
 		return err
 	}
 
-	err = tr.Encrypt(store)
+	f, err := os.Open(InferStorePath(config))
 	if err != nil {
 		return err
 	}
 
-	err = tr.Write(InferStorePath())
+	err = vault.Dump(f)
 	if err != nil {
 		return err
 	}
@@ -320,29 +361,29 @@ func RemoveRecipientAction(recipient string) error {
 }
 
 func GetAction(key string, filepath string) error {
-	tr, err := OpenTrousseau(InferStorePath())
+	config, err := config.Load("")
+	if err != nil {
+		fmt.Errorf("unable to load configuration; reason: %s", err.Error())
+	}
+
+	vault, err := OpenVault(InferStorePath(config))
 	if err != nil {
 		return err
 	}
 
-	store, err := tr.Decrypt()
+	secretStore, err := vault.Unlock(config)
 	if err != nil {
 		return err
 	}
 
-	value, err := store.Data.Get(key)
-	if err != nil {
-		return err
+	value, found := secretStore.Data[key]
+	if !found {
+		return fmt.Errorf("key %s not found", key)
 	}
 
 	// If the --file flag is provided
 	if filepath != "" {
-		valueBytes, ok := value.(string)
-		if !ok {
-			ErrorLogger.Fatal(fmt.Sprintf("unable to write %s value to file", key))
-		}
-
-		err := ioutil.WriteFile(filepath, []byte(valueBytes), os.FileMode(0600))
+		err := ioutil.WriteFile(filepath, []byte(value), os.FileMode(0600))
 		if err != nil {
 			return err
 		}
@@ -360,6 +401,11 @@ func GetAction(key string, filepath string) error {
 }
 
 func SetAction(key, value, file string) error {
+	config, err := config.Load("")
+	if err != nil {
+		fmt.Errorf("unable to load configuration; reason: %s", err.Error())
+	}
+
 	// If the --file flag is provided
 	if file != "" {
 		// And the file actually exists on file system
@@ -376,24 +422,28 @@ func SetAction(key, value, file string) error {
 		}
 	}
 
-	tr, err := OpenTrousseau(InferStorePath())
+	vault, err := OpenVault(InferStorePath(config))
 	if err != nil {
 		return err
 	}
 
-	store, err := tr.Decrypt()
+	secretStore, err := vault.Unlock(config)
+	if err != nil {
+		return err
+	}
+	secretStore.Data[key] = value
+
+	err = vault.Lock(config, secretStore)
 	if err != nil {
 		return err
 	}
 
-	store.Data.Set(key, value)
-
-	err = tr.Encrypt(store)
+	f, err := os.Open(InferStorePath(config))
 	if err != nil {
 		return err
 	}
 
-	err = tr.Write(InferStorePath())
+	err = vault.Dump(f)
 	if err != nil {
 		return err
 	}
@@ -402,27 +452,47 @@ func SetAction(key, value, file string) error {
 }
 
 func RenameAction(src, dest string, overwrite bool) error {
-	tr, err := OpenTrousseau(InferStorePath())
+	config, err := config.Load("")
+	if err != nil {
+		fmt.Errorf("unable to load configuration; reason: %s", err.Error())
+	}
+
+	vault, err := OpenVault(InferStorePath(config))
 	if err != nil {
 		return err
 	}
 
-	store, err := tr.Decrypt()
+	secretStore, err := vault.Unlock(config)
 	if err != nil {
 		return err
 	}
 
-	err = store.Data.Rename(src, dest, overwrite)
+	srcValue, found := secretStore.Data[src]
+	if !found {
+		return fmt.Errorf("key %s not found", src)
+	}
+
+	// If destination key already exists, and overwrite flag is
+	// set to false, then return an error
+	_, found = secretStore.Data[dest]
+	if found && overwrite == false {
+		return fmt.Errorf("key %s already exists. The overwrite flag was not set", dest)
+	}
+
+	secretStore.Data[dest] = srcValue
+	delete(secretStore.Data, src)
+
+	err = vault.Lock(config, secretStore)
 	if err != nil {
 		return err
 	}
 
-	err = tr.Encrypt(store)
+	f, err := os.Open(InferStorePath(config))
 	if err != nil {
 		return err
 	}
 
-	err = tr.Write(InferStorePath())
+	err = vault.Dump(f)
 	if err != nil {
 		return err
 	}
@@ -431,24 +501,34 @@ func RenameAction(src, dest string, overwrite bool) error {
 }
 
 func DelAction(key string) error {
-	tr, err := OpenTrousseau(InferStorePath())
+	config, err := config.Load("")
+	if err != nil {
+		fmt.Errorf("unable to load configuration; reason: %s", err.Error())
+	}
+
+	vault, err := OpenVault(InferStorePath(config))
 	if err != nil {
 		return err
 	}
 
-	store, err := tr.Decrypt()
+	secretStore, err := vault.Unlock(config)
 	if err != nil {
 		return err
 	}
 
-	store.Data.Del(key)
+	delete(secretStore.Data, key)
 
-	tr.Encrypt(store)
+	vault.Lock(config, secretStore)
 	if err != nil {
 		return err
 	}
 
-	err = tr.Write(InferStorePath())
+	f, err := os.Open(InferStorePath(config))
+	if err != nil {
+		return err
+	}
+
+	err = vault.Dump(f)
 	if err != nil {
 		return err
 	}
@@ -457,18 +537,22 @@ func DelAction(key string) error {
 }
 
 func KeysAction() error {
-	tr, err := OpenTrousseau(InferStorePath())
+	config, err := config.Load("")
+	if err != nil {
+		fmt.Errorf("unable to load configuration; reason: %s", err.Error())
+	}
+
+	vault, err := OpenVault(InferStorePath(config))
 	if err != nil {
 		return err
 	}
 
-	store, err := tr.Decrypt()
+	secretStore, err := vault.Unlock(config)
 	if err != nil {
 		return err
 	}
 
-	keys := store.Data.Keys()
-	for _, k := range keys {
+	for k := range secretStore.Data {
 		InfoLogger.Println(k)
 	}
 
@@ -476,43 +560,57 @@ func KeysAction() error {
 }
 
 func ShowAction() error {
-	tr, err := OpenTrousseau(InferStorePath())
+	config, err := config.Load("")
+	if err != nil {
+		fmt.Errorf("unable to load configuration; reason: %s", err.Error())
+	}
+
+	vault, err := OpenVault(InferStorePath(config))
 	if err != nil {
 		return err
 	}
 
-	store, err := tr.Decrypt()
+	secretStore, err := vault.Unlock(config)
 	if err != nil {
 		return err
 	}
 
-	items := store.Data.Items()
-	for k, v := range items {
-		InfoLogger.Println(fmt.Sprintf("%s : %s", k, v.(string)))
+	for k, v := range secretStore.Data {
+		InfoLogger.Println(fmt.Sprintf("%s : %s", k, v))
 	}
 
 	return nil
 }
 
 func MetaAction() error {
-	tr, err := OpenTrousseau(InferStorePath())
+	config, err := config.Load("")
+	if err != nil {
+		fmt.Errorf("unable to load configuration; reason: %s", err.Error())
+	}
+
+	vault, err := OpenVault(InferStorePath(config))
 	if err != nil {
 		return err
 	}
 
-	store, err := tr.Decrypt()
+	secretStore, err := vault.Unlock(config)
 	if err != nil {
 		return err
 	}
 
-	InfoLogger.Println(store.Meta)
+	InfoLogger.Printf("%+v\n", secretStore.Metadata)
 	return nil
 }
 
 func UpgradeAction(yes, noBackup bool) error {
 	var proceed string = "n"
 
-	data, err := ioutil.ReadFile(InferStorePath())
+	config, err := config.Load("")
+	if err != nil {
+		fmt.Errorf("unable to load configuration; reason: %s", err.Error())
+	}
+
+	data, err := ioutil.ReadFile(InferStorePath(config))
 	if err != nil {
 		return err
 	}
@@ -522,7 +620,7 @@ func UpgradeAction(yes, noBackup bool) error {
 		fmt.Errorf("Initial store version could not be detected")
 	}
 
-	newStoreFile, err := UpgradeFrom(version, data, UpgradeClosures)
+	newStoreFile, err := UpgradeFrom(config, version, data, UpgradeClosures)
 	if err != nil {
 		return err
 	}
@@ -530,7 +628,7 @@ func UpgradeAction(yes, noBackup bool) error {
 	if yes == false {
 		fmt.Printf("You are about to upgrade trousseau data "+
 			"store %s (version %s) up to version %s. Proceed? [Y/n] ",
-			InferStorePath(), version, TROUSSEAU_VERSION)
+			InferStorePath(config), version, TROUSSEAU_VERSION)
 		count, _ := fmt.Scanf("%s", &proceed)
 
 		// Default to "y" if return was pressed
@@ -542,14 +640,14 @@ func UpgradeAction(yes, noBackup bool) error {
 	if strings.ToLower(proceed) == "y" || yes {
 		// Write a backup of the old store file inplace
 		if noBackup == false {
-			err = ioutil.WriteFile(InferStorePath()+".bkp", data, os.FileMode(0700))
+			err = ioutil.WriteFile(InferStorePath(config)+".bkp", data, os.FileMode(0700))
 			if err != nil {
 				return err
 			}
 		}
 
 		// Overwrite source legacy store with the new version content
-		err = ioutil.WriteFile(InferStorePath(), newStoreFile, os.FileMode(0700))
+		err = ioutil.WriteFile(InferStorePath(config), newStoreFile, os.FileMode(0700))
 		if err != nil {
 			return err
 		}

@@ -3,15 +3,21 @@ package trousseau
 import (
 	"fmt"
 
-	"github.com/oleiade/trousseau/internal/store"
 	"github.com/urfave/cli"
 )
 
 type ImportStrategy uint32
 
+// Import strategies enumeration
+const (
+	IMPORT_YOURS     = 0x0
+	IMPORT_THEIRS    = 0x1
+	IMPORT_OVERWRITE = 0x2
+)
+
 // ImportStore imports the src encrypted data store content
 // into dest data store, respecting the provided import strategy.
-func ImportStore(src, dest *store.Store, strategy ImportStrategy) error {
+func ImportStore(src, dest *SecretStore, strategy ImportStrategy) error {
 	switch strategy {
 	case IMPORT_YOURS:
 		for key, value := range src.Data {
