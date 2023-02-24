@@ -16,7 +16,7 @@ require (
 	github.com/imdario/mergo v0.3.12
 	github.com/joeshaw/envdecode v0.0.0-20190604014844-d6d9849fcc2c
 	github.com/mcuadros/go-defaults v1.2.0
-	github.com/oleiade/reflections v0.0.0-20131121131850-632977f98cd3
+	github.com/oleiade/reflections v1.0.1
 	github.com/oleiade/serrure v0.0.0-20160812094227-28794589ac9b
 	github.com/stretchr/testify v1.7.0
 	github.com/tmc/keyring v0.0.0-20160307194037-adec3bef79f7
