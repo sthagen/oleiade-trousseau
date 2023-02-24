@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go v1.38.38
 	github.com/go-ozzo/ozzo-validation v3.6.0+incompatible
 	github.com/google/go-cmp v0.5.5
-	github.com/google/go-github v0.0.0-20160802180827-56add9d4071b
+	github.com/google/go-github v17.0.0+incompatible
 	github.com/google/go-querystring v0.0.0-20160401233042-9235644dd9e5 // indirect
 	github.com/guelfey/go.dbus v0.0.0-20131113121618-f6a3a2366cc3 // indirect
 	github.com/howeyc/gopass v0.0.0-20160803164817-b63a7d07e65d
