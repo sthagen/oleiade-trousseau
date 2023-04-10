@@ -21,7 +21,7 @@ require (
 	github.com/stretchr/testify v1.7.0
 	github.com/tmc/keyring v0.0.0-20160307194037-adec3bef79f7
 	github.com/urfave/cli v0.0.0-20160801031116-168c95418e66
-	golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9
+	golang.org/x/crypto v0.8.0
 	golang.org/x/oauth2 v0.0.0-20160810173516-4784bb855e56
 	google.golang.org/appengine v1.6.1 // indirect
 )
