@@ -3,12 +3,12 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"os"
 
-	validation "github.com/go-ozzo/ozzo-validation"
+	validation "github.com/go-ozzo/ozzo-validation/v4"
 
+	"dario.cat/mergo"
 	"github.com/BurntSushi/toml"
-	"github.com/imdario/mergo"
 	"github.com/joeshaw/envdecode"
 	defaults "github.com/mcuadros/go-defaults"
 )
@@ -16,9 +16,9 @@ import (
 // Config holds configuration for crate applications.
 type Config struct {
 	Filename    string `env:"TROUSSEAU_STORE_FILENAME" toml:"filename" default:".trousseau"`
-	StorePath   string `env:"ENV_TROUSSEAU_STORE" toml:"store_path" default:".trousseau"`
-	Passphrase  string `env:"ENV_PASSPHRASE_KEY"`
-	MasterGPGID string `env:"ENV_MASTER_GPG_ID_KEY" toml:"master_gpg_id"`
+	StorePath   string `env:"TROUSSEAU_STORE" toml:"store_path" default:".trousseau"`
+	Passphrase  string `env:"TROUSSEAU_PASSPHRASE"`
+	MasterGPGID string `env:"TROUSSEAU_MASTER_GPG_ID" toml:"master_gpg_id"`
 
 	Encryption encryption `toml:"encryption"`
 	Keyring    keyring    `toml:"keyring"`
@@ -30,8 +30,8 @@ type encryption struct {
 }
 
 type keyring struct {
-	UserKey    string `env:"ENV_KEYRING_USER_KEY" toml:"user_key" default:"trousseau_user"`
-	ServiceKey string `env:"ENV_KEYRING_SERVICE_KEY" toml:"service_key" default:"trousseau_service"`
+	UserKey    string `env:"TROUSSEAU_KEYRING_USER" toml:"user_key" default:"trousseau_user"`
+	ServiceKey string `env:"TROUSSEAU_KEYRING_SERVICE" toml:"service_key" default:"trousseau_service"`
 }
 
 // Load creates a Config object fullfiled with values extracted from
@@ -41,7 +41,7 @@ func Load(path string) (*Config, error) {
 	defaults.SetDefaults(config)
 
 	if path != "" {
-		d, err := ioutil.ReadFile(path)
+		d, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
 		}

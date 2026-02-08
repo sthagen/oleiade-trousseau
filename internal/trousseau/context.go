@@ -27,6 +27,10 @@ var (
 var gStorePath string
 var gPassphrase string
 var gPassphraseAskFlag bool
+var gConfigPath string
+
+func SetConfigPath(p string) { gConfigPath = p }
+func GetConfigPath() string  { return gConfigPath }
 
 func SetStorePath(storePath string) { gStorePath = storePath }
 func GetStorePath() string          { return gStorePath }
@@ -77,7 +81,7 @@ func GetPassphrase(c *config.Config) (passphrase string, err error) {
 
 	// try to retrieve passphrase from env
 	if len(c.Passphrase) > 0 {
-		return passphrase, nil
+		return c.Passphrase, nil
 	}
 
 	// if passphrase wasn't found in env, try to fetch it from

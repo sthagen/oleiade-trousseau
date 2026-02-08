@@ -1,10 +1,11 @@
 package remote
 
 import (
+	"context"
 	"fmt"
 	"io"
 
-	"github.com/google/go-github/github"
+	"github.com/google/go-github/v68/github"
 	"golang.org/x/oauth2"
 )
 
@@ -21,7 +22,7 @@ func NewGistHandler(user, token string) *GistHandler {
 	return &GistHandler{
 		connexion: github.NewClient(
 			oauth2.NewClient(
-				oauth2.NoContext,
+				context.Background(),
 				oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token}),
 			),
 		),
@@ -37,9 +38,7 @@ func (h *GistHandler) Connect() error {
 // Push reads the provided io.ReadSeeker and puts its content into a
 // Github gist.
 func (h *GistHandler) Push(filename string, r io.ReadSeeker) error {
-	var data []byte
-
-	_, err := r.Read(data)
+	data, err := io.ReadAll(r)
 	if err != nil {
 		return fmt.Errorf("unable to read data store content; reason: %s", err.Error())
 	}
@@ -51,12 +50,12 @@ func (h *GistHandler) Push(filename string, r io.ReadSeeker) error {
 	gist := &github.Gist{
 		Public: &public,
 		Files: map[github.GistFilename]github.GistFile{
-			github.GistFilename(filename): github.GistFile{Content: &dataStr},
+			github.GistFilename(filename): {Content: &dataStr},
 		},
 	}
 
 	// Push the gist to github
-	_, _, err = h.connexion.Gists.Create(gist)
+	_, _, err = h.connexion.Gists.Create(context.Background(), gist)
 	if err != nil {
 		return err
 	}
@@ -68,7 +67,7 @@ func (h *GistHandler) Push(filename string, r io.ReadSeeker) error {
 // to the provided io.Writer.
 func (h *GistHandler) Pull(gistname string, w io.Writer) error {
 	// Fetch the user's gists list
-	gists, _, err := h.connexion.Gists.List(h.User, nil)
+	gists, _, err := h.connexion.Gists.List(context.Background(), h.User, nil)
 	if err != nil {
 		return err
 	}
@@ -89,7 +88,7 @@ func (h *GistHandler) Pull(gistname string, w io.Writer) error {
 	}
 
 	// Download the gist file content
-	gist, _, err = h.connexion.Gists.Get(*gist.ID)
+	gist, _, err = h.connexion.Gists.Get(context.Background(), *gist.ID)
 	if err != nil {
 		return fmt.Errorf("unable to download gist from Github; reason: %s", err.Error())
 	}

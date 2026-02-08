@@ -3,7 +3,7 @@ package remote
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
+	"os"
 	"strings"
 	"sync"
 
@@ -59,8 +59,7 @@ func (h *SSHHandler) Push(remotePath string, r io.ReadSeeker) error {
 		w, _ := session.StdinPipe()
 		defer w.Close()
 
-		var data []byte
-		_, err := r.Read(data)
+		data, err := io.ReadAll(r)
 		if err != nil {
 			ue <- fmt.Errorf("unable to read data intended for upload; reason: %s", err.Error())
 		}
@@ -100,7 +99,10 @@ func (h *SSHHandler) Pull(remotePath string, w io.Writer) error {
 	defer session.Close()
 
 	session.Stdout = w
-	if err := session.Run(fmt.Sprintf("cat %s", remotePath)); err != nil {
+	if strings.ContainsAny(remotePath, ";|&`$(){}[]!#~") {
+		return fmt.Errorf("remote path contains invalid characters: %s", remotePath)
+	}
+	if err := session.Run(fmt.Sprintf("cat -- %q", remotePath)); err != nil {
 		return fmt.Errorf("Failed to run: %s", err.Error())
 	}
 
@@ -121,6 +123,8 @@ func (h *SSHHandler) connect() error {
 			ssh.Password(h.Password),
 			publicKeyAuth,
 		},
+		// TODO: replace with knownhosts.New() for proper host key verification
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
 
 	h.client, err = ssh.Dial("tcp", h.Endpoint, clientConfig)
@@ -132,7 +136,7 @@ func (h *SSHHandler) connect() error {
 }
 
 func (h *SSHHandler) getPublicKeyAuthFrom(path string) (ssh.AuthMethod, error) {
-	key, err := ioutil.ReadFile(path)
+	key, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("unable to read private key: %v", err)
 	}
